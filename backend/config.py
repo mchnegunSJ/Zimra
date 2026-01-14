@@ -1,8 +1,11 @@
 import os
 
-
 class Config:
-    SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-secret-key')
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or 'sqlite:///fiscal.db'
+    SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-key-lithi-trust'
+    SQLALCHEMY_DATABASE_URI = 'sqlite:///fiscal.db'
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    JSON_SORT_KEYS = False
+    
+    # --- CHANGE THIS URL ---
+    # Old: "https://fdmsapitest.zimra.co.zw/Device/v1"
+    # New: Your Local Mock Server
+    ZIMRA_API_URL = "http://localhost:4000/Device/v1"

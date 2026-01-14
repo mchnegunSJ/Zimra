@@ -9,33 +9,34 @@ import {
   IconButton, 
   List, 
   ListItem, 
-  ListItemSecondaryAction, 
   ListItemText, 
   TextField, 
   Typography, 
   Paper,
   useTheme,
   InputAdornment,
-  Badge
+  CircularProgress,
+  Dialog,
+  DialogContent
 } from '@mui/material';
 import { 
   Add as AddIcon, 
   Remove as RemoveIcon, 
-  Delete as DeleteIcon,
   Receipt as ReceiptIcon,
-  Clear as ClearIcon,
-  ArrowBack as ArrowBackIcon,
   AttachMoney as AttachMoneyIcon,
-  LocalAtm as LocalAtmIcon,
   CreditCard as CreditCardIcon,
   AccountBalanceWallet as AccountBalanceWalletIcon,
-  Search as SearchIcon
+  Search as SearchIcon,
+  Logout as LogoutIcon,
+  History as HistoryIcon
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
-import { CartItem, Product } from '../../types';
-import { useAuth } from '../../contexts/AuthContext';
+import axios from 'axios';
+import QRCode from 'react-qr-code'; 
+import { useAuth } from '../../contexts/AuthContext'; 
+import { Product, CartItem } from '../../types'; 
 
-// Mock products data
+// MOCK DATA 
 const MOCK_PRODUCTS: Product[] = [
   { id: '1', name: 'Espresso (Single)', price: 2.50, taxInclusive: true, taxRate: 0.15 },
   { id: '2', name: 'Espresso (Double)', price: 3.50, taxInclusive: true, taxRate: 0.15 },
@@ -43,774 +44,399 @@ const MOCK_PRODUCTS: Product[] = [
   { id: '4', name: 'Latte', price: 4.00, taxInclusive: true, taxRate: 0.15 },
   { id: '5', name: 'Almond Croissant', price: 3.25, taxInclusive: true, taxRate: 0.15 },
   { id: '6', name: 'Chocolate Chip Cookie', price: 2.75, taxInclusive: true, taxRate: 0.15 },
-  { id: '7', name: 'Bag of Whole Beans (Colombia)', price: 12.99, taxInclusive: true, taxRate: 0.15 },
-  { id: '8', name: 'Bag of Whole Beans (Ethiopia Yirgacheffe)', price: 14.99, taxInclusive: true, taxRate: 0.15 },
+  { id: '7', name: 'Bag of Whole Beans (Col)', price: 12.99, taxInclusive: true, taxRate: 0.15 },
+  { id: '8', name: 'Bag of Whole Beans (Eth)', price: 14.99, taxInclusive: true, taxRate: 0.15 },
 ];
+
+// Helper to bypass strict Grid typing issues in some MUI versions
+const AnyGrid: any = Grid;
 
 const MainPOS: React.FC = () => {
   const theme = useTheme();
   const navigate = useNavigate();
-  const { fiscalDay, logout, user } = useAuth();
+  const { logout, user } = useAuth(); 
+
+  // --- STATE ---
+  const [deviceID, setDeviceID] = useState<string>("");
+  const [isDayOpen, setIsDayOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [quantity, setQuantity] = useState(1);
-  const [filteredProducts, setFilteredProducts] = useState<Product[]>(MOCK_PRODUCTS);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'mobile'>('cash');
-  const [lastReceipt, setLastReceipt] = useState<any | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [lastReceipt, setLastReceipt] = useState<any | null>(null); 
 
-  // Filter products based on search term
+  // --- 1. FETCH DEVICE STATUS ON LOAD ---
   useEffect(() => {
-    if (!searchTerm.trim()) {
-      setFilteredProducts(MOCK_PRODUCTS);
-      return;
-    }
+    const fetchStatus = async () => {
+        try {
+            // FIX: Cast to <any> to solve TS18046 error
+            const res = await axios.get<any>('http://localhost:5000/api/device/status');
+            const data = res.data; 
+            setDeviceID(data.deviceID || "UNKNOWN");
+            setIsDayOpen(!!data.is_day_open);
+        } catch (e) {
+            console.error("Failed to fetch device status");
+        }
+    };
+    fetchStatus();
+  }, []);
 
-    const filtered = MOCK_PRODUCTS.filter(product =>
-      product.name.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-    setFilteredProducts(filtered);
-  }, [searchTerm]);
+  // --- FILTERING ---
+  const filteredProducts = MOCK_PRODUCTS.filter(product =>
+    product.name.toLowerCase().includes(searchTerm.toLowerCase())
+  );
 
-  // Calculate cart totals
+  // --- TOTALS CALCULATOR ---
   const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-  const taxRate = 0.15; // 15% VAT
-  const tax = subtotal * (taxRate / (1 + taxRate)); // Calculate tax from tax-inclusive price
-  const total = subtotal;
+  const tax = subtotal * 0.15; 
+  const total = subtotal + tax; 
 
-  const cartTotal = total;
-
-  // Add item to cart
+  // --- CART OPERATIONS ---
   const addToCart = () => {
     if (!selectedProduct || quantity <= 0) return;
-
-    setCart(prevCart => {
-      const existingItem = prevCart.find(item => item.id === selectedProduct.id);
+    
+    setCart(prev => {
+      const existing = prev.find(item => item.id === selectedProduct.id);
       
-      if (existingItem) {
-        return prevCart.map(item =>
-          item.id === selectedProduct.id
-            ? { ...item, quantity: item.quantity + quantity, total: (item.quantity + quantity) * item.price }
-            : item
-        );
+      if (existing) {
+        return prev.map(item => {
+            if (item.id === selectedProduct.id) {
+                const newQty = item.quantity + quantity;
+                const lineTotal = selectedProduct.price * newQty;
+                const taxAmount = lineTotal * selectedProduct.taxRate;
+                
+                // Return updated item with all required fields
+                return { 
+                    ...item, 
+                    quantity: newQty,
+                    total: lineTotal,
+                    taxAmount: taxAmount 
+                };
+            }
+            return item;
+        });
       }
+      
+      // FIX: Calculate total & taxAmount for new item to satisfy TS2345
+      const lineTotal = selectedProduct.price * quantity;
+      const taxAmount = lineTotal * selectedProduct.taxRate;
 
-      return [
-        ...prevCart,
-        {
+      const newItem: CartItem = {
           ...selectedProduct,
-          quantity,
-          total: quantity * selectedProduct.price,
-          taxAmount: (quantity * selectedProduct.price) * (taxRate / (1 + taxRate))
-        }
-      ];
+          quantity: quantity,
+          total: lineTotal,
+          taxAmount: taxAmount
+      };
+      
+      return [...prev, newItem];
     });
 
-    // Reset form
     setSelectedProduct(null);
     setQuantity(1);
   };
 
-  // Update item quantity in cart
-  const updateCartItemQuantity = (id: string, newQuantity: number) => {
-    if (newQuantity <= 0) {
-      removeFromCart(id);
-      return;
-    }
-
-    setCart(prevCart =>
-      prevCart.map(item =>
-        item.id === id
-          ? { ...item, quantity: newQuantity, total: newQuantity * item.price }
-          : item
-      )
-    );
+  const updateQuantity = (id: string, delta: number) => {
+    setCart(prev => prev.map(item => {
+        if (item.id === id) {
+            const newQty = Math.max(0, item.quantity + delta);
+            const lineTotal = item.price * newQty;
+            const taxAmount = lineTotal * item.taxRate;
+            
+            return { 
+                ...item, 
+                quantity: newQty,
+                total: lineTotal,
+                taxAmount: taxAmount
+            };
+        }
+        return item;
+    }).filter(item => item.quantity > 0));
   };
 
-  // Remove item from cart
-  const removeFromCart = (id: string) => {
-    setCart(prevCart => prevCart.filter(item => item.id !== id));
-  };
+  const clearCart = () => setCart([]);
 
-  // Clear entire cart
-  const clearCart = () => {
-    setCart([]);
-  };
-
-  // Process payment and persist receipt (optionally with fiscal data)
-  const processPayment = (fiscalData?: any) => {
-    if (cart.length === 0) return;
-
-    const receipt = {
-      id: `R-${Date.now()}`,
-      cashier: user?.name || 'Cashier',
-      date: new Date().toISOString(),
-      items: cart,
-      subtotal,
-      tax,
-      total,
-      paymentMethod,
-      fiscal: fiscalData || null,
-    };
-
-    // Persist to localStorage for end-of-day screen
-    try {
-      const existingRaw = localStorage.getItem('sales');
-      const existing = existingRaw ? JSON.parse(existingRaw) : [];
-      const updated = [...existing, receipt];
-      localStorage.setItem('sales', JSON.stringify(updated));
-    } catch (e) {
-      console.error('Failed to persist sales', e);
-    }
-
-    setLastReceipt(receipt);
-
-    // Clear the cart after recording
-    clearCart();
-  };
-
+  // --- CORE LOGIC: FISCALISATION ---
   const handleFinalizeSale = async () => {
-    const saleData = {
-      deviceID: '123456', // TODO: load from DeviceConfig/local storage
-      totalAmount: cartTotal,
-      invoiceNo: 'INV-' + Date.now(),
-    };
-
+    if (!isDayOpen) {
+        alert("Fiscal Day is CLOSED. Please open the day first.");
+        return;
+    }
+    
+    setIsLoading(true);
     try {
-      const response = await fetch('http://localhost:5000/api/submit-receipt', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(saleData),
+      // FIX: Cast to <any> to solve TS18046 error
+      const response = await axios.post<any>('http://localhost:5000/api/submit-receipt', {
+        deviceID: deviceID,
+        totalAmount: total,
+        currency: "USD",
+        items: cart 
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+      const backendData = response.data; // Now safe to use
+
+      if (backendData.status === 'success') {
+        
+        // 2. Map backend + static store data to Receipt object
+        const receiptData = {
+            // --- Dynamic Fields from Backend ---
+            invoiceNo:    backendData.invoiceNo,
+            globalNo:     backendData.globalNo,
+            date:         backendData.date,
+            qr_data:      backendData.qr_data,
+            verification: backendData.verification,
+
+            // --- Static Fields ---
+            storeName:    "Big Old Cravings & Bakeries",
+            address:      "123 Main Street, Bulawayo",
+            bpNumber:     "200123456",
+            vatNumber:    "100123456",
+
+            // --- Local Cart Data ---
+            items:        [...cart],
+            total:        total,
+            paymentMethod,
+            cashier:      user?.name || "Admin"
+        };
+
+        setLastReceipt(receiptData);
+        setCart([]); 
       }
-
-      const data = await response.json();
-
-      if (data.status === 'success') {
-        // Persist and show a full receipt that includes fiscal identity
-        processPayment(data);
-
-        alert('Receipt Fiscalised!\nGlobal No: ' + data.receiptID);
-        console.log('QR Data:', data.qr_data);
-      }
-    } catch (error) {
-      console.error('Fiscalisation Failed', error);
-      alert('Error: Could not fiscalise receipt. Check if Day is Open.');
+    } catch (error: any) {
+      console.error("Fiscal Error", error);
+      alert(`Fiscalisation Failed: ${error.response?.data?.message || "Check Backend Connection"}`);
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  // Format currency
-  const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-    }).format(amount);
-  };
-
-  const isFiscalOpen = !!fiscalDay?.isOpen;
-
+  // --- RENDER ---
   return (
-    <Box sx={{ p: 3, maxWidth: 1200, mx: 'auto' }}>
-      {/* Header */}
-      <Box
-        sx={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          mb: 3,
-        }}
-      >
+    <Box sx={{ p: 3, maxWidth: 1400, mx: 'auto', height: '100vh', display: 'flex', flexDirection: 'column' }}>
+      
+      {/* HEADER */}
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3, alignItems: 'center' }}>
         <Box>
-          <Typography variant="h4" component="h1" sx={{ mb: 0.5 }}>
-            Point of Sale
-          </Typography>
-          <Box sx={{ display: 'flex', alignItems: 'center' }}>
-            <Box
-              sx={{
-                width: 10,
-                height: 10,
-                borderRadius: '50%',
-                bgcolor: isFiscalOpen ? 'success.main' : 'error.main',
-                mr: 1,
-              }}
-            />
-            <Typography variant="body2" color="textSecondary">
-              Fiscal Day:{' '}
-              <Box
-                component="span"
-                sx={{ fontWeight: 600 }}
-              >
-                {isFiscalOpen ? 'OPEN' : 'CLOSED'}
-              </Box>
-            </Typography>
-          </Box>
-        </Box>
-
-        <Box sx={{ display: 'flex', gap: 1.5 }}>
-          <Button
-            variant="outlined"
-            onClick={() => navigate('/end-of-day')}
-            sx={{
-              borderRadius: 999,
-              px: 3,
-              py: 1,
-              fontSize: '0.9rem',
-              textTransform: 'none',
-              bgcolor: '#ffffff',
-            }}
-          >
-            Go to End of Day...
-          </Button>
-          <Button
-            variant="text"
-            color="inherit"
-            onClick={logout}
-            sx={{ textTransform: 'none', fontSize: '0.9rem' }}
-          >
-            Logout
-          </Button>
-        </Box>
-      </Box>
-
-      <Box
-        sx={{
-          display: 'grid',
-          gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' },
-          gap: 3,
-        }}
-      >
-        {/* Left Panel - Add Item */}
-        <Card elevation={0} sx={{ bgcolor: '#f3f3f3' }}>
-          <CardContent sx={{ p: 3 }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2, alignItems: 'center' }}>
-              <Typography variant="h6">Add Item</Typography>
-
-              {/* Currency toggle mock (UI only) */}
-              <Box
-                sx={{
-                  display: 'inline-flex',
-                  borderRadius: 999,
-                  overflow: 'hidden',
-                  border: `1px solid ${theme.palette.divider}`,
-                  fontSize: '0.75rem',
-                }}
-              >
-                <Box
-                  sx={{
-                    px: 1.5,
-                    py: 0.5,
-                    bgcolor: 'primary.main',
-                    color: '#fff',
-                    fontWeight: 600,
-                  }}
-                >
-                  USD
-                </Box>
-                <Box
-                  sx={{
-                    px: 1.5,
-                    py: 0.5,
-                    bgcolor: 'transparent',
-                    color: 'text.secondary',
-                    fontWeight: 500,
-                  }}
-                >
-                  ZWL
-                </Box>
-              </Box>
-            </Box>
-
-            <Typography variant="caption" sx={{ fontWeight: 600, mb: 0.5, display: 'block' }}>
-              Item Name
-            </Typography>
-            <TextField
-              fullWidth
-              variant="outlined"
-              placeholder="Start typing to search..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              sx={{ mb: 2, mt: 0.5 }}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <SearchIcon />
-                  </InputAdornment>
-                ),
-              }}
-            />
-
-            <Box
-              sx={{
-                maxHeight: 220,
-                overflowY: 'auto',
-                mb: 2,
-                border: `1px solid ${theme.palette.divider}`,
-                borderRadius: 2,
-              }}
-            >
-              <List dense disablePadding>
-                {filteredProducts.map((product) => (
-                  <Box
-                    key={product.id}
-                    component="li"
-                    sx={{
-                      cursor: 'pointer',
-                      backgroundColor:
-                        selectedProduct?.id === product.id
-                          ? theme.palette.action.selected
-                          : 'transparent',
-                      '&:hover': {
-                        backgroundColor: theme.palette.action.hover,
-                      },
-                      px: 2,
-                      py: 1,
-                      borderBottom: `1px solid ${theme.palette.divider}`,
-                      '&:last-of-type': {
-                        borderBottom: 'none',
-                      },
-                    }}
-                    onClick={() => setSelectedProduct(product)}
-                  >
-                    <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                      {product.name}
-                    </Typography>
-                    <Typography variant="caption" color="textSecondary">
-                      {formatCurrency(product.price)}
-                    </Typography>
-                  </Box>
-                ))}
-              </List>
-            </Box>
-
-            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2, mb: 2 }}>
-              <Box>
-                <Typography variant="caption" sx={{ fontWeight: 600, mb: 0.5, display: 'block' }}>
-                  Quantity
+            <Typography variant="h4" fontWeight="800" color="primary">LithiTrust POS</Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Box sx={{ 
+                    width: 12, height: 12, borderRadius: '50%', 
+                    bgcolor: isDayOpen ? 'success.main' : 'error.main' 
+                }} />
+                <Typography variant="caption" fontWeight="bold">
+                    DEVICE: {deviceID} | STATUS: {isDayOpen ? "OPEN" : "CLOSED"}
                 </Typography>
-                <TextField
-                  type="number"
-                  value={quantity}
-                  onChange={(e) =>
-                    setQuantity(Math.max(1, parseInt(e.target.value) || 1))
-                  }
-                  InputProps={{ inputProps: { min: 1 } }}
-                />
-              </Box>
-
-              <Box>
-                <Typography variant="caption" sx={{ fontWeight: 600, mb: 0.5, display: 'block' }}>
-                  Unit Price
-                </Typography>
-                <TextField
-                  value={
-                    selectedProduct
-                      ? formatCurrency(selectedProduct.price)
-                      : '0.00'
-                  }
-                  disabled
-                />
-              </Box>
             </Box>
-
-            <Button
-              fullWidth
-              variant="contained"
-              size="large"
-              onClick={addToCart}
-              disabled={!selectedProduct}
-              startIcon={<AddIcon />}
-              sx={{ mt: 1, py: 1.4 }}
-            >
-              Add Item to Receipt
+        </Box>
+        <Box sx={{ display: 'flex', gap: 1 }}>
+            <Button startIcon={<HistoryIcon />} variant="outlined" onClick={() => navigate('/end-of-day')}>
+                End of Day
             </Button>
-          </CardContent>
-        </Card>
-
-        {/* Right Panel - Current Sale */}
-        <Card elevation={0} sx={{ display: 'flex', flexDirection: 'column', bgcolor: '#f3f3f3' }}>
-          <CardContent sx={{ p: 3, flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
-            <Box
-              sx={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                mb: 1,
-              }}
-            >
-              <Typography variant="h6">Current Sale</Typography>
-              <Typography variant="body2" color="textSecondary">
-                Currency: <Box component="span" sx={{ fontWeight: 600 }}>USD</Box>
-              </Typography>
-            </Box>
-
-            <Paper
-              variant="outlined"
-              sx={{ flexGrow: 1, mb: 2, overflow: 'hidden' }}
-            >
-              {cart.length === 0 ? (
-                <Box
-                  sx={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    height: '100%',
-                    p: 4,
-                  }}
-                >
-                  <Typography variant="body1" color="textSecondary" align="center">
-                    No items added to the sale yet.
-                  </Typography>
-                  <Typography
-                    variant="body2"
-                    color="textSecondary"
-                    align="center"
-                    sx={{ mt: 1 }}
-                  >
-                    Search and add items from the left panel.
-                  </Typography>
-                </Box>
-              ) : (
-                <>
-                  {/* Table header */}
-                  <Box
-                    sx={{
-                      display: 'grid',
-                      gridTemplateColumns: '2.5fr 0.6fr 0.8fr 1fr 0.3fr',
-                      px: 2,
-                      py: 1,
-                      borderBottom: `1px solid ${theme.palette.divider}`,
-                      bgcolor: theme.palette.grey[50],
-                      fontSize: '0.8rem',
-                      fontWeight: 600,
-                      color: 'text.secondary',
-                    }}
-                  >
-                    <Box>Item</Box>
-                    <Box>Qty</Box>
-                    <Box>Price</Box>
-                    <Box sx={{ textAlign: 'right' }}>Total</Box>
-                    <Box></Box>
-                  </Box>
-                  <List sx={{ maxHeight: 340, overflowY: 'auto', pt: 0 }}>
-                    {cart.map((item) => (
-                      <ListItem
-                        key={item.id}
-                        divider
-                        sx={{
-                          display: 'grid',
-                          gridTemplateColumns: '2.5fr 0.6fr 0.8fr 1fr 0.3fr',
-                          columnGap: 1,
-                          alignItems: 'center',
-                          py: 0.75,
-                        }}
-                      >
-                        <ListItemText
-                          primary={item.name}
-                          primaryTypographyProps={{ fontWeight: 500, fontSize: '0.9rem' }}
-                        />
-                        <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                          <IconButton
-                            size="small"
-                            onClick={() =>
-                              updateCartItemQuantity(item.id, item.quantity - 1)
-                            }
-                          >
-                            <RemoveIcon fontSize="small" />
-                          </IconButton>
-                          <Typography
-                            variant="body2"
-                            sx={{ mx: 1, minWidth: 20, textAlign: 'center' }}
-                          >
-                            {item.quantity}
-                          </Typography>
-                          <IconButton
-                            size="small"
-                            onClick={() =>
-                              updateCartItemQuantity(item.id, item.quantity + 1)
-                            }
-                          >
-                            <AddIcon fontSize="small" />
-                          </IconButton>
-                        </Box>
-                        <Typography variant="body2">
-                          {formatCurrency(item.price)}
-                        </Typography>
-                        <Typography
-                          variant="body2"
-                          sx={{ textAlign: 'right', fontWeight: 500 }}
-                        >
-                          {formatCurrency(item.total)}
-                        </Typography>
-                        <IconButton
-                          size="small"
-                          color="error"
-                          onClick={() => removeFromCart(item.id)}
-                        >
-                          <DeleteIcon fontSize="small" />
-                        </IconButton>
-                      </ListItem>
-                    ))}
-                  </List>
-                </>
-              )}
-            </Paper>
-
-            {/* Order Summary */}
-            <Box sx={{ mt: 1, mb: 2 }}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-                <Typography variant="body2">Subtotal</Typography>
-                <Typography variant="body2">{formatCurrency(subtotal)}</Typography>
-              </Box>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-                <Typography variant="body2">VAT (15%)</Typography>
-                <Typography variant="body2">{formatCurrency(tax)}</Typography>
-              </Box>
-              <Divider sx={{ my: 1 }} />
-              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                <Typography variant="h6">TOTAL</Typography>
-                <Typography variant="h6">{formatCurrency(total)}</Typography>
-              </Box>
-            </Box>
-
-            {/* Payment Method */}
-            <Box sx={{ mb: 3 }}>
-              <Typography
-                variant="subtitle2"
-                color="textSecondary"
-                gutterBottom
-              >
-                PAYMENT METHOD
-              </Typography>
-              <Box sx={{ display: 'flex', gap: 1.5, mb: 2 }}>
-                <Button
-                  variant={paymentMethod === 'cash' ? 'contained' : 'outlined'}
-                  onClick={() => setPaymentMethod('cash')}
-                  startIcon={<AttachMoneyIcon />}
-                  fullWidth
-                >
-                  Cash
-                </Button>
-                <Button
-                  variant={paymentMethod === 'card' ? 'contained' : 'outlined'}
-                  onClick={() => setPaymentMethod('card')}
-                  startIcon={<CreditCardIcon />}
-                  fullWidth
-                >
-                  Card
-                </Button>
-                <Button
-                  variant={paymentMethod === 'mobile' ? 'contained' : 'outlined'}
-                  onClick={() => setPaymentMethod('mobile')}
-                  startIcon={<AccountBalanceWalletIcon />}
-                  fullWidth
-                >
-                  Mobile
-                </Button>
-              </Box>
-            </Box>
-
-            {/* Action Buttons */}
-            <Box sx={{ display: 'flex', gap: 2, mt: 1 }}>
-              <Button
-                variant="contained"
-                fullWidth
-                size="large"
-                onClick={handleFinalizeSale}
-                disabled={cart.length === 0}
-                startIcon={<ReceiptIcon />}
-                sx={{
-                  bgcolor: '#16a34a',
-                  '&:hover': { bgcolor: '#15803d' },
-                }}
-              >
-                FINALIZE & PRINT FISCAL RECEIPT
-              </Button>
-              <Button
-                variant="contained"
-                fullWidth
-                size="large"
-                onClick={clearCart}
-                disabled={cart.length === 0}
-                sx={{
-                  bgcolor: '#dc2626',
-                  '&:hover': { bgcolor: '#b91c1c' },
-                }}
-              >
-                Clear Sale
-              </Button>
-            </Box>
-
-            {/* Receipt preview approximating printed slip */}
-            {lastReceipt && (
-              <Box
-                sx={{
-                  mt: 3,
-                  p: 2,
-                  borderRadius: 2,
-                  border: `1px dashed ${theme.palette.divider}`,
-                  maxWidth: 320,
-                  mx: 'auto',
-                  bgcolor: '#ffffff',
-                  fontFamily: 'monospace',
-                }}
-              >
-                {(() => {
-                  const fiscal = lastReceipt.fiscal || {};
-                  const identity = fiscal.fiscal_identity || {};
-
-                  return (
-                    <>
-                      {/* Header with trade name and top QR placeholder */}
-                      <Box sx={{ textAlign: 'center', mb: 1 }}>
-                        <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                          {identity.trade_name || 'Store Name'}
-                        </Typography>
-                        <Typography variant="caption" display="block">
-                          {identity.tax_payer_name || 'Registered Tax Payer'}
-                        </Typography>
-                        <Typography variant="caption" display="block">
-                          {identity.address || 'Address'}
-                        </Typography>
-                        <Box
-                          sx={{
-                            mt: 1,
-                            width: 96,
-                            height: 96,
-                            mx: 'auto',
-                            border: `2px solid ${theme.palette.grey[400]}`,
-                            borderRadius: 1,
-                            position: 'relative',
-                            overflow: 'hidden',
-                          }}
-                        >
-                          <Box
-                            sx={{
-                              position: 'absolute',
-                              inset: 8,
-                              bgcolor: theme.palette.grey[200],
-                              backgroundImage:
-                                'repeating-linear-gradient(45deg, rgba(0,0,0,0.15) 0, rgba(0,0,0,0.15) 2px, transparent 2px, transparent 4px)',
-                            }}
-                          />
-                        </Box>
-                      </Box>
-
-                      <Divider sx={{ my: 1 }} />
-
-                      {/* Order meta */}
-                      <Typography variant="caption" display="block" sx={{ mb: 0.5 }}>
-                        *** TAKE - AWAY ***
-                      </Typography>
-                      <Typography variant="caption" display="block">
-                        Order Num: {lastReceipt.id}
-                      </Typography>
-                      <Typography variant="caption" display="block">
-                        Fiscal Day: {identity.fiscal_day_no ?? '-'} | REC GN: {fiscal.receiptID ?? '-'}
-                      </Typography>
-                      <Typography variant="caption" display="block">
-                        Cashier: {lastReceipt.cashier}
-                      </Typography>
-                      <Typography variant="caption" display="block" sx={{ mb: 1 }}>
-                        {new Date(lastReceipt.date).toLocaleString()}
-                      </Typography>
-
-                      <Divider sx={{ my: 1 }} />
-
-                      {/* Line items */}
-                      <Box sx={{ mb: 1 }}>
-                        {lastReceipt.items?.map((item: any) => (
-                          <Box
-                            key={item.id}
-                            sx={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem' }}
-                          >
-                            <Box sx={{ maxWidth: '60%' }}>{item.name}</Box>
-                            <Box>
-                              {item.quantity} x {formatCurrency(item.price)}
-                            </Box>
-                          </Box>
-                        ))}
-                      </Box>
-
-                      <Divider sx={{ my: 1 }} />
-
-                      {/* Totals */}
-                      <Box sx={{ fontSize: '0.75rem' }}>
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <span>Subtotal</span>
-                          <span>{formatCurrency(lastReceipt.subtotal)}</span>
-                        </Box>
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <span>VAT 15%</span>
-                          <span>{formatCurrency(lastReceipt.tax)}</span>
-                        </Box>
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5, fontWeight: 700 }}>
-                          <span>Total</span>
-                          <span>{formatCurrency(lastReceipt.total)}</span>
-                        </Box>
-                      </Box>
-
-                      <Divider sx={{ my: 1 }} />
-
-                      {/* Fiscal identity block */}
-                      <Box sx={{ fontSize: '0.7rem', mb: 1 }}>
-                        <Typography variant="caption" display="block">
-                          BP No: {identity.bp_number || '-'}
-                        </Typography>
-                        <Typography variant="caption" display="block">
-                          VAT No: {identity.vat_number || '-'}
-                        </Typography>
-                        <Typography variant="caption" display="block">
-                          Device Id: {identity.device_id || '123456'}
-                        </Typography>
-                      </Box>
-
-                      {/* Verification section with bottom QR placeholder */}
-                      <Box sx={{ textAlign: 'center', mt: 1 }}>
-                        <Box
-                          sx={{
-                            width: 80,
-                            height: 80,
-                            mx: 'auto',
-                            border: `2px solid ${theme.palette.grey[400]}`,
-                            borderRadius: 1,
-                            position: 'relative',
-                            overflow: 'hidden',
-                            mb: 1,
-                          }}
-                        >
-                          <Box
-                            sx={{
-                              position: 'absolute',
-                              inset: 8,
-                              bgcolor: theme.palette.grey[200],
-                              backgroundImage:
-                                'repeating-linear-gradient(45deg, rgba(0,0,0,0.15) 0, rgba(0,0,0,0.15) 2px, transparent 2px, transparent 4px)',
-                            }}
-                          />
-                        </Box>
-                        <Typography variant="caption" display="block">
-                          Verification Code: {(fiscal.hash || '').slice(0, 16) || '--------'}
-                        </Typography>
-                        <Typography variant="caption" display="block">
-                          Verify at https://fdms.zimra.co.zw
-                        </Typography>
-                      </Box>
-                    </>
-                  );
-                })()}
-              </Box>
-            )}
-          </CardContent>
-        </Card>
+            <Button startIcon={<LogoutIcon />} color="error" onClick={logout}>
+                Logout
+            </Button>
+        </Box>
       </Box>
+
+      {/* MAIN CONTENT GRID - Using AnyGrid to bypass strict typing issues */}
+      <AnyGrid container spacing={3} sx={{ flex: 1, overflow: 'hidden' }}>
+        
+        {/* LEFT: PRODUCTS */}
+        <AnyGrid item xs={12} md={7} sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+           {/* Search & Inputs */}
+           <Paper sx={{ p: 2, mb: 2 }}>
+             <TextField 
+                fullWidth placeholder="Search Products..." variant="outlined" size="small"
+                value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
+                InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon/></InputAdornment> }}
+             />
+           </Paper>
+
+           {/* Product List */}
+           <Box sx={{ flex: 1, overflowY: 'auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 2 }}>
+             {filteredProducts.map((prod) => (
+               <Card 
+                 key={prod.id} 
+                 sx={{ 
+                   cursor: 'pointer', transition: '0.2s',
+                   border: selectedProduct?.id === prod.id ? `2px solid ${theme.palette.primary.main}` : '1px solid transparent',
+                   '&:hover': { transform: 'translateY(-2px)', boxShadow: 3 }
+                 }}
+                 onClick={() => setSelectedProduct(prod)}
+               >
+                 <CardContent sx={{ textAlign: 'center', p: 2 }}>
+                    <Typography variant="body2" fontWeight="bold" noWrap>{prod.name}</Typography>
+                    <Typography variant="h6" color="primary">${prod.price.toFixed(2)}</Typography>
+                 </CardContent>
+               </Card>
+             ))}
+           </Box>
+
+           {/* Add Controls */}
+           <Paper sx={{ mt: 2, p: 2, display: 'flex', gap: 2, alignItems: 'center' }}>
+              <TextField 
+                label="Qty" type="number" size="small" sx={{ width: 80 }}
+                value={quantity} onChange={(e) => setQuantity(parseInt(e.target.value) || 1)}
+              />
+              <TextField 
+                fullWidth disabled size="small" 
+                value={selectedProduct ? selectedProduct.name : "Select a product above"} 
+              />
+              <Button 
+                variant="contained" size="large" disabled={!selectedProduct}
+                onClick={addToCart} startIcon={<AddIcon />}
+              >
+                Add
+              </Button>
+           </Paper>
+        </AnyGrid>
+
+        {/* RIGHT: CART & PAY */}
+        <AnyGrid item xs={12} md={5} sx={{ height: '100%' }}>
+           <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column', bgcolor: '#f9fafb' }}>
+             <CardContent sx={{ p: 2, flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                <Typography variant="h6" sx={{ mb: 1 }}>Current Sale</Typography>
+                
+                {/* Cart Items */}
+                <Box sx={{ flex: 1, overflowY: 'auto', bgcolor: 'white', borderRadius: 1, border: '1px solid #eee' }}>
+                    <List dense>
+                        {cart.length === 0 && (
+                            <Typography sx={{ p: 4, textAlign: 'center', color: 'text.secondary' }}>
+                                Cart is empty
+                            </Typography>
+                        )}
+                        {cart.map((item) => (
+                            <ListItem key={item.id} divider>
+                                <ListItemText 
+                                    primary={item.name} 
+                                    secondary={`$${item.price.toFixed(2)} each`} 
+                                />
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                    <IconButton size="small" onClick={() => updateQuantity(item.id, -1)}><RemoveIcon fontSize="small"/></IconButton>
+                                    <Typography fontWeight="bold">{item.quantity}</Typography>
+                                    <IconButton size="small" onClick={() => updateQuantity(item.id, 1)}><AddIcon fontSize="small"/></IconButton>
+                                    <Typography fontWeight="bold" sx={{ minWidth: 50, textAlign: 'right' }}>
+                                        ${(item.price * item.quantity).toFixed(2)}
+                                    </Typography>
+                                </Box>
+                            </ListItem>
+                        ))}
+                    </List>
+                </Box>
+
+                {/* Totals */}
+                <Box sx={{ mt: 2 }}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <Typography>Subtotal</Typography>
+                        <Typography>${subtotal.toFixed(2)}</Typography>
+                    </Box>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <Typography>Tax (15%)</Typography>
+                        <Typography>${tax.toFixed(2)}</Typography>
+                    </Box>
+                    <Divider sx={{ my: 1 }} />
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <Typography variant="h5" fontWeight="bold">Total</Typography>
+                        <Typography variant="h5" fontWeight="bold" color="primary">${total.toFixed(2)}</Typography>
+                    </Box>
+                </Box>
+
+                {/* Payment Methods */}
+                <Box sx={{ display: 'flex', gap: 1, mt: 2 }}>
+                    {['cash', 'card', 'mobile'].map((method) => (
+                        <Button 
+                            key={method}
+                            variant={paymentMethod === method ? 'contained' : 'outlined'}
+                            onClick={() => setPaymentMethod(method as any)}
+                            startIcon={method === 'cash' ? <AttachMoneyIcon/> : method === 'card' ? <CreditCardIcon/> : <AccountBalanceWalletIcon/>}
+                            fullWidth size="small" sx={{ textTransform: 'capitalize' }}
+                        >
+                            {method}
+                        </Button>
+                    ))}
+                </Box>
+
+                {/* Actions */}
+                <Box sx={{ display: 'flex', gap: 2, mt: 2 }}>
+                    <Button variant="outlined" color="error" fullWidth onClick={clearCart}>
+                        Clear
+                    </Button>
+                    <Button 
+                        variant="contained" color="success" fullWidth size="large"
+                        onClick={handleFinalizeSale}
+                        disabled={cart.length === 0 || isLoading}
+                        startIcon={isLoading ? <CircularProgress size={20} color="inherit"/> : <ReceiptIcon/>}
+                    >
+                        {isLoading ? "Signing..." : "PAY & PRINT"}
+                    </Button>
+                </Box>
+             </CardContent>
+           </Card>
+        </AnyGrid>
+      </AnyGrid>
+
+      {/* --- RECEIPT MODAL --- */}
+      <Dialog open={!!lastReceipt} onClose={() => setLastReceipt(null)} maxWidth="xs" fullWidth>
+        <DialogContent sx={{ textAlign: 'center', p: 3, fontFamily: 'monospace', bgcolor: '#fff' }}>
+           <Typography variant="h6" fontWeight="bold">{lastReceipt?.storeName}</Typography>
+           <Typography variant="caption">{lastReceipt?.address}</Typography>
+           <Divider sx={{ my: 1 }} />
+           
+           <Box sx={{ textAlign: 'left', fontSize: '0.8rem' }}>
+              <Typography variant="caption">BP No: {lastReceipt?.bpNumber}</Typography><br/>
+              <Typography variant="caption">VAT No: {lastReceipt?.vatNumber}</Typography><br/>
+              <Divider sx={{ my: 0.5 }} />
+              <Typography variant="caption">Date: {lastReceipt?.date}</Typography><br/>
+              <Typography variant="caption">Invoice: {lastReceipt?.invoiceNo}</Typography><br/>
+              <Typography variant="caption">Global No: {lastReceipt?.globalNo}</Typography><br/>
+              <Typography variant="caption">Device ID: {deviceID}</Typography>
+           </Box>
+
+           <Divider sx={{ my: 1 }} />
+           {/* Items List */}
+           <Box sx={{ textAlign: 'left', mb: 2 }}>
+             {lastReceipt?.items.map((item: any, i: number) => (
+                <Box key={i} sx={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                    <span>{item.quantity} x {item.name}</span>
+                    <span>${(item.price * item.quantity).toFixed(2)}</span>
+                </Box>
+             ))}
+           </Box>
+           <Divider sx={{ my: 1 }} />
+           <Box sx={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold' }}>
+              <span>TOTAL PAID</span>
+              <span>${lastReceipt?.total.toFixed(2)}</span>
+           </Box>
+           <Divider sx={{ my: 2 }} />
+
+           {/* THE REAL QR CODE */}
+           <Box sx={{ display: 'flex', justifyContent: 'center', my: 2 }}>
+              {lastReceipt?.qr_data && (
+                  <QRCode value={lastReceipt.qr_data} size={128} />
+              )}
+           </Box>
+           
+           {lastReceipt?.verification && (
+               <>
+                <Typography variant="caption" display="block" sx={{ fontSize: '0.6rem', wordBreak: 'break-all', mt: 1 }}>
+                    <strong>FISCAL HASH:</strong><br/>
+                    {lastReceipt.verification.device_hash}
+                </Typography>
+                <Typography variant="caption" fontWeight="bold" display="block" sx={{ mt: 1, color: lastReceipt.verification.server_status === 'VERIFIED' ? 'green' : 'orange' }}>
+                    ZIMRA STATUS: {lastReceipt.verification.server_status || "PENDING"}
+                </Typography>
+               </>
+           )}
+           
+           <Button variant="contained" fullWidth sx={{ mt: 2 }} onClick={() => setLastReceipt(null)}>
+              Start New Sale
+           </Button>
+        </DialogContent>
+      </Dialog>
+
     </Box>
   );
-}
+};
 
 export default MainPOS;

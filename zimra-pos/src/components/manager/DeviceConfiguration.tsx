@@ -1,239 +1,297 @@
 import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+import { useNavigate } from 'react-router-dom'; 
 import { 
-  Box, 
-  Button, 
-  Card, 
-  CardContent, 
-  CircularProgress, 
-  Divider, 
-  Paper, 
-  Step, 
-  StepLabel, 
-  Stepper, 
-  Typography, 
-  useTheme,
-  Alert,
-  Snackbar
+  Box, Button, Card, CardContent, CircularProgress, 
+  Step, StepLabel, Stepper, Typography, useTheme, 
+  Alert, Snackbar, TextField, Divider, Chip, Paper 
 } from '@mui/material';
 import { 
-  CheckCircle as CheckCircleIcon, 
-  Error as ErrorIcon,
-  Lock as LockIcon,
-  VpnKey as VpnKeyIcon,
-  HowToReg as HowToRegIcon,
-  Settings as SettingsIcon
+  VpnKey as KeyIcon, 
+  CloudUpload as CloudIcon, 
+  VerifiedUser as VerifiedIcon, 
+  Settings as SettingsIcon,
+  ReceiptLong as ReceiptIcon,
+  RestartAlt as ResetIcon 
 } from '@mui/icons-material';
 import { useAuth } from '../../contexts/AuthContext';
 
-const steps = [
-  'Generate Key & CSR',
-  'Register Device with ZIMRA',
-  'Fetch System Config'
-];
+// --- HELPER COMPONENT ---
+const CloudUploadIconWrapper = () => (
+  <Box sx={{ position: 'relative', display: 'inline-flex', mb: 2 }}>
+    <CloudIcon sx={{ fontSize: 80, color: '#0288d1' }} />
+    <VerifiedIcon sx={{ 
+      fontSize: 30, color: '#fff', bgcolor: '#2e7d32', borderRadius: '50%', 
+      position: 'absolute', bottom: 5, right: -5, padding: '2px'
+    }} />
+  </Box>
+);
+
+const steps = ['Initialize Device', 'ZIMRA Handshake', 'Fiscalisation Complete'];
 
 const DeviceConfiguration: React.FC = () => {
   const theme = useTheme();
-  const { deviceStatus, generateKeys, logout } = useAuth();
+  const navigate = useNavigate(); 
+  const { logout } = useAuth();
+
+  // --- STATE ---
   const [activeStep, setActiveStep] = useState(0);
+  const [deviceID, setDeviceID] = useState(""); 
+  const [serialNumber, setSerialNumber] = useState("LITHITRUST-POS-001");
+  const [csrData, setCsrData] = useState<string | null>(null);
+  const [zimraCertificate, setZimraCertificate] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  
+  // --- FIX: Added 'info' to the allowed types here ---
+  const [notification, setNotification] = useState<{message: string, type: 'success' | 'error' | 'info' | null}>({ message: '', type: null });
 
+  // --- 1. CHECK STATUS ON LOAD ---
   useEffect(() => {
-    // Set active step based on device status
-    if (deviceStatus.csrStatus === 'Registered') {
-      setActiveStep(2);
-    } else if (deviceStatus.csrStatus === 'Generated') {
-      setActiveStep(1);
-    } else {
-      setActiveStep(0);
-    }
-  }, [deviceStatus]);
-
-  const handleGenerateKeys = async () => {
-    setIsLoading(true);
-    setError(null);
-    
-    try {
-      const success = await generateKeys();
-      if (success) {
-        setSuccess('Device keys and CSR generated successfully!');
-      } else {
-        throw new Error('Failed to generate keys');
+    const checkStatus = async () => {
+      try {
+        const response = await axios.get<any>('http://localhost:5000/api/device/status');
+        if (response.data.status === 'configured') {
+          setDeviceID(response.data.deviceID);
+          setActiveStep(2); // Jump to success if already configured
+        }
+      } catch (error) {
+        console.log("Device not configured yet");
       }
-    } catch (err) {
-      setError('Failed to generate device keys. Please try again.');
-      console.error('Key generation error:', err);
+    };
+    checkStatus();
+  }, []);
+
+  // --- 2. ACTION: GENERATE KEYS (STAGE 1) ---
+  const handleGenerateKeys = async () => {
+    if (!deviceID) return showNotification('Please enter a valid Device ID', 'error');
+    setIsLoading(true);
+    try {
+      const response = await axios.post<any>('http://localhost:5000/api/setup/generate-keys', {
+        deviceID, serialNumber
+      });
+      if (response.data.status === 'success') {
+        setCsrData(response.data.csr);
+        setActiveStep(1); 
+        showNotification('Secure Keys Generated Successfully', 'success');
+      }
+    } catch (error) {
+      showNotification('Failed to generate keys. Is Backend running?', 'error');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const getStepContent = (step: number) => {
-    switch (step) {
-      case 0:
-        return (
-          <Box sx={{ mt: 2 }}>
-            <Typography variant="body1" paragraph>
-              Generate a new private key and Certificate Signing Request (CSR) for this device.
-              This is the first step in registering your device with ZIMRA.
-            </Typography>
-            <Button
-              variant="contained"
-              color="primary"
-              onClick={handleGenerateKeys}
-              disabled={isLoading || deviceStatus.csrStatus !== 'Not Generated'}
-              startIcon={isLoading ? <CircularProgress size={20} /> : <VpnKeyIcon />}
-              sx={{ mt: 2 }}
-            >
-              {isLoading ? 'Generating...' : 'Generate Key & CSR'}
-            </Button>
-          </Box>
-        );
-      case 1:
-        return (
-          <Box sx={{ mt: 2 }}>
-            <Typography variant="body1" paragraph>
-              Register your device with ZIMRA using the generated CSR. You'll need to provide
-              the following details to complete the registration process.
-            </Typography>
-            <Paper variant="outlined" sx={{ p: 2, mt: 2, mb: 3, backgroundColor: theme.palette.background.paper }}>
-              <Typography variant="subtitle2" color="textSecondary">Device ID:</Typography>
-              <Typography variant="body1" sx={{ mb: 2, fontFamily: 'monospace' }}>
-                {deviceStatus.deviceId || 'Not available'}
-              </Typography>
-              
-              <Typography variant="subtitle2" color="textSecondary">Serial Number:</Typography>
-              <Typography variant="body1" sx={{ mb: 2, fontFamily: 'monospace' }}>
-                {deviceStatus.serialNo || 'Not available'}
-              </Typography>
-              
-              <Typography variant="subtitle2" color="textSecondary">CSR Status:</Typography>
-              <Box display="flex" alignItems="center" mb={2}>
-                {deviceStatus.csrStatus === 'Generated' ? (
-                  <CheckCircleIcon color="success" sx={{ mr: 1 }} />
-                ) : (
-                  <ErrorIcon color="error" sx={{ mr: 1 }} />
-                )}
-                <Typography variant="body1">
-                  {deviceStatus.csrStatus}
-                </Typography>
-              </Box>
-            </Paper>
-            
-            <Button
-              variant="contained"
-              color="primary"
-              onClick={() => setActiveStep(2)}
-              disabled={deviceStatus.csrStatus !== 'Generated'}
-              startIcon={<HowToRegIcon />}
-            >
-              Proceed to Registration
-            </Button>
-          </Box>
-        );
-      case 2:
-        return (
-          <Box sx={{ mt: 2 }}>
-            <Typography variant="body1" paragraph>
-              Fetch the latest system configuration from ZIMRA to complete the setup process.
-            </Typography>
-            
-            <Paper variant="outlined" sx={{ p: 2, mt: 2, mb: 3, backgroundColor: theme.palette.background.paper }}>
-              <Typography variant="subtitle2" color="textSecondary">Device Status:</Typography>
-              <Box display="flex" alignItems="center" mb={2}>
-                {deviceStatus.isConfigured ? (
-                  <CheckCircleIcon color="success" sx={{ mr: 1 }} />
-                ) : (
-                  <ErrorIcon color="warning" sx={{ mr: 1 }} />
-                )}
-                <Typography variant="body1">
-                  {deviceStatus.isConfigured ? 'Device is fully configured' : 'Device not fully configured'}
-                </Typography>
-              </Box>
-              
-              {deviceStatus.certificate && (
-                <>
-                  <Typography variant="subtitle2" color="textSecondary">Certificate:</Typography>
-                  <Typography variant="body2" sx={{ fontFamily: 'monospace', wordBreak: 'break-word' }}>
-                    {deviceStatus.certificate}
-                  </Typography>
-                </>
-              )}
-            </Paper>
-            
-            <Button
-              variant="contained"
-              color="primary"
-              onClick={() => {}}
-              disabled={!deviceStatus.isConfigured}
-              startIcon={<SettingsIcon />}
-            >
-              {deviceStatus.isConfigured ? 'Configuration Complete' : 'Fetch System Config'}
-            </Button>
-          </Box>
-        );
-      default:
-        return 'Unknown step';
+  // --- 3. ACTION: SUBMIT TO ZIMRA (STAGE 2) ---
+  const handleSubmitToZimra = async () => {
+    setIsLoading(true);
+    try {
+      const response = await axios.post<any>('http://localhost:5000/api/setup/register', {
+        deviceID, 
+        csr: csrData 
+      });
+
+      if (response.data.status === 'success') {
+        setZimraCertificate(response.data.certificate);
+        setActiveStep(2); 
+        showNotification('Registration Approved by ZIMRA Authority', 'success');
+      }
+    } catch (error: any) {
+      const msg = error.response?.data?.message || 'Connection to ZIMRA Failed';
+      showNotification(msg, 'error');
+    } finally {
+      setIsLoading(false);
     }
   };
 
+  // --- 4. RESET FUNCTION (For Demo) ---
+  const handleReset = async () => {
+    if(!window.confirm("Are you sure? This will wipe the device memory for the demo.")) return;
+    try {
+        setActiveStep(0);
+        setDeviceID("");
+        setCsrData(null);
+        showNotification('System Reset for Demonstration', 'info');
+    } catch (e) {
+        console.error(e);
+    }
+  };
+
+  const showNotification = (msg: string, type: 'success' | 'error' | 'info') => {
+    setNotification({ message: msg, type });
+  };
+
+  const handleBackToLogin = () => {
+    logout();
+    navigate('/login');
+  };
+
   return (
-    <Box sx={{ maxWidth: 800, mx: 'auto', p: 3 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-        <Box>
-          <Typography variant="h4" gutterBottom>
-            Device Configuration
+    <Box sx={{ maxWidth: 900, margin: '0 auto', p: 4 }}>
+      {/* Header */}
+      <Box
+        sx={{
+          mb: 6,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
+        <Box sx={{ textAlign: 'left' }}>
+          <Typography variant="h4" sx={{ fontWeight: 800, color: '#1a237e', mb: 1 }}>
+            Fiscalisation Setup
           </Typography>
-          <Typography variant="body1" color="textSecondary">
-            Complete the following steps to configure your device for use with ZIMRA's fiscalization system.
+          <Typography variant="subtitle1" color="text.secondary">
+            Secure Hardware Initialization & Authority Registration
           </Typography>
         </Box>
+
         <Button
           variant="text"
           color="inherit"
-          onClick={logout}
+          onClick={handleBackToLogin}
           sx={{ textTransform: 'none', fontSize: '0.9rem' }}
         >
           Back to Login
         </Button>
       </Box>
-      
-      <Card sx={{ mb: 4, mt: 3 }}>
-        <CardContent>
-          <Stepper activeStep={activeStep} orientation="horizontal" sx={{ mb: 4 }}>
-            {steps.map((label, index) => (
-              <Step key={label} completed={index < activeStep}>
-                <StepLabel>{label}</StepLabel>
-              </Step>
-            ))}
-          </Stepper>
+
+      {/* Progress Stepper */}
+      <Stepper activeStep={activeStep} alternativeLabel sx={{ mb: 6 }}>
+        {steps.map((label) => (
+          <Step key={label}>
+            <StepLabel>{label}</StepLabel>
+          </Step>
+        ))}
+      </Stepper>
+
+      <Card elevation={4} sx={{ borderRadius: 3, border: '1px solid #e0e0e0' }}>
+        <CardContent sx={{ p: 5 }}>
           
-          <Divider sx={{ mb: 4 }} />
-          
-          {getStepContent(activeStep)}
+          {/* --- STAGE 1: INITIALIZATION --- */}
+          {activeStep === 0 && (
+            <Box textAlign="center">
+              <SettingsIcon sx={{ fontSize: 70, color: '#1a237e', mb: 2, opacity: 0.8 }} />
+              <Typography variant="h5" gutterBottom sx={{ fontWeight: 600 }}>Step 1: Initialize Hardware</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 4, maxWidth: 500, mx: 'auto' }}>
+                Enter the unique Device ID provided by the tax authority. The system will generate a mathematically unique private key for this ID.
+              </Typography>
+
+              <Box sx={{ maxWidth: 400, mx: 'auto', textAlign: 'left' }}>
+                <TextField 
+                  fullWidth label="ZIMRA Device ID" 
+                  placeholder="e.g. 72000003" 
+                  value={deviceID} onChange={(e) => setDeviceID(e.target.value)}
+                  variant="outlined" sx={{ mb: 3 }}
+                />
+                <Button 
+                  fullWidth variant="contained" size="large" 
+                  onClick={handleGenerateKeys} disabled={isLoading || !deviceID}
+                  startIcon={isLoading ? <CircularProgress size={20} color="inherit"/> : <KeyIcon />}
+                  sx={{ py: 1.5, bgcolor: '#1a237e' }}
+                >
+                  {isLoading ? 'Generating Keys...' : 'Generate Secure Keys'}
+                </Button>
+              </Box>
+            </Box>
+          )}
+
+          {/* --- STAGE 2: THE HANDSHAKE (CSR) --- */}
+          {activeStep === 1 && (
+            <Box>
+              <Box textAlign="center" sx={{ mb: 4 }}>
+                <CloudUploadIconWrapper />
+                <Typography variant="h5" gutterBottom sx={{ fontWeight: 600 }}>Step 2: Authority Handshake</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Review the generated request below before transmitting to ZIMRA.
+                </Typography>
+              </Box>
+
+              <Divider sx={{ my: 3 }}><Chip label="Generated CSR Data" /></Divider>
+              
+              <Paper variant="outlined" sx={{ 
+                p: 3, bgcolor: '#f8f9fa', borderRadius: 2, 
+                fontFamily: 'monospace', fontSize: '0.75rem', 
+                color: '#455a64', maxHeight: 200, overflow: 'auto', mb: 4 
+              }}>
+                <Typography variant="caption" display="block" sx={{ mb: 1, fontWeight: 'bold', color: '#1a237e' }}>
+                  -----BEGIN CERTIFICATE REQUEST-----
+                </Typography>
+                {csrData || "Loading CSR Data..."}
+                <Typography variant="caption" display="block" sx={{ mt: 1, fontWeight: 'bold', color: '#1a237e' }}>
+                  -----END CERTIFICATE REQUEST-----
+                </Typography>
+              </Paper>
+
+              <Box textAlign="center">
+                <Button 
+                  variant="contained" size="large" color="success"
+                  onClick={handleSubmitToZimra} disabled={isLoading}
+                  startIcon={isLoading ? <CircularProgress size={20} color="inherit"/> : <CloudIcon />}
+                  sx={{ py: 1.5, px: 6, fontSize: '1.1rem', fontWeight: 'bold' }}
+                >
+                  {isLoading ? 'Connecting to Authority...' : 'Submit to ZIMRA Authority'}
+                </Button>
+              </Box>
+            </Box>
+          )}
+
+          {/* --- STAGE 3: SUCCESS (Certificate) --- */}
+          {activeStep === 2 && (
+            <Box textAlign="center">
+              <VerifiedIcon sx={{ fontSize: 80, color: '#2e7d32', mb: 2 }} />
+              <Typography variant="h4" gutterBottom sx={{ color: '#2e7d32', fontWeight: 800 }}>
+                Fiscalisation Complete
+              </Typography>
+              
+              <Alert severity="success" sx={{ mb: 4, textAlign: 'left', maxWidth: 600, mx: 'auto' }}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>Device Authorized</Typography>
+                This device ({deviceID}) has been digitally signed by the ZIMRA Authority. 
+                All future receipts will be legally verifiable.
+              </Alert>
+
+              {/* Display Certificate Snippet if available */}
+              {zimraCertificate && (
+                 <Paper variant="outlined" sx={{ p: 2, mb: 4, bgcolor: '#e8f5e9', border: '1px dashed #2e7d32' }}>
+                    <Typography variant="caption" sx={{ fontFamily: 'monospace', color: '#1b5e20' }}>
+                        <strong>ZIMRA DIGITAL SIGNATURE RECEIVED:</strong><br/>
+                        {zimraCertificate.substring(0, 50)}...[Verified]
+                    </Typography>
+                 </Paper>
+              )}
+
+              <Box sx={{ display: 'flex', justifyContent: 'center', gap: 2 }}>
+                <Button 
+                    variant="contained" 
+                    size="large" 
+                    startIcon={<ReceiptIcon />}
+                    onClick={() => navigate('/')} 
+                    sx={{ py: 1.5, px: 4 }}
+                >
+                    Go to Point of Sale
+                </Button>
+
+                <Button 
+                    variant="outlined" 
+                    color="error"
+                    startIcon={<ResetIcon />}
+                    onClick={handleReset}
+                >
+                    Reset (Demo)
+                </Button>
+              </Box>
+            </Box>
+          )}
+
         </CardContent>
       </Card>
-      
+
       <Snackbar 
-        open={!!error} 
-        autoHideDuration={6000} 
-        onClose={() => setError(null)}
+        open={!!notification.type} autoHideDuration={6000} 
+        onClose={() => setNotification({ ...notification, type: null })}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
       >
-        <Alert severity="error" onClose={() => setError(null)}>
-          {error}
-        </Alert>
-      </Snackbar>
-      
-      <Snackbar 
-        open={!!success} 
-        autoHideDuration={6000} 
-        onClose={() => setSuccess(null)}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
-      >
-        <Alert severity="success" onClose={() => setSuccess(null)}>
-          {success}
+        <Alert severity={notification.type || 'info'} variant="filled">
+          {notification.message}
         </Alert>
       </Snackbar>
     </Box>
